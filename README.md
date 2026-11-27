@@ -150,6 +150,28 @@ never contain passwords, tokens or header values, and are pruned after 365 days 
 Server logs: `data/logs/http.log` and `https.log`, appended across restarts with timestamps
 (`backend/logging.yaml`); `start.sh` rotates a log over 20 MB at start-up and keeps 5 old copies.
 
+## Backups and version control
+
+The code is a git repository (`main`); `data/` is runtime state and is never committed.
+
+`scripts/backup.sh` runs nightly at 02:15 from the `tmc` user's crontab and writes
+`/home/tmc/qwen-desktop-backups/nightly/qwen-desktop-<date>.tgz` (mode 600), keeping the newest 14
+(`KEEP=30 scripts/backup.sh` to keep more). Each archive holds a consistent copy of the database (SQLite
+online backup, taken while the servers run, then `integrity_check`ed), `data/uploads`, `workspaces`,
+`repos`, `sandbox` and `certs`, `config.yaml`, a git bundle of the code and any uncommitted changes as
+a patch. Output goes to `backup.log` in the same folder. The archives sit on the same disk as the app,
+so copy them elsewhere for protection against a disk failure.
+
+Restore:
+
+```bash
+./start.sh stop
+mkdir /tmp/restore && tar -C /tmp/restore -xzf /home/tmc/qwen-desktop-backups/nightly/qwen-desktop-<date>.tgz
+mv data data.old && mkdir -p data/logs && cp -a /tmp/restore/data/. data/
+git clone /tmp/restore/code.bundle /tmp/restore/code   # code, if needed
+./start.sh
+```
+
 ## Sharing and the secret guard
 
 **Share links.** *Share* in a chat header creates a link (`/share/<token>`) to a snapshot of the
