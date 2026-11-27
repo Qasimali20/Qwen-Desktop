@@ -18,6 +18,7 @@ export interface AppConfig {
   features: {
     asr: boolean; ocr: boolean; vision_routing: boolean; web_search: string; analysis: boolean; knowledge: boolean
     gateway: boolean
+    repo_sync_minutes: number   // 0: git repositories only sync on request
   }
   gateway: { anthropic_default_model: string; public_url: string | null; http_port: number }
   /** Model new workspace chats start on; null: the usual default. */
@@ -57,9 +58,12 @@ export interface Repo {
   ref: string | null
   commit_sha: string | null
   status: RepoStatus
+  auto_sync: number            // git only: 1 = checked for new commits on a schedule
+  checked_at: number | null    // last remote check (automatic sync)
   meta: {
     files?: number; indexed?: number; chunks?: number; bytes?: number; lines?: number; langs?: string[]
     skipped?: number; error?: string | null; synced_at?: number
+    auto_sync_error?: string | null; sync_trigger?: 'auto' | 'manual'
     changes?: { added: number; changed: number; removed: number; unchanged: number }
   }
   added_by: string | null

@@ -64,6 +64,12 @@ class GatewayCfg(BaseModel):
     public_url: str | None = None
 
 
+class RepoSyncCfg(BaseModel):
+    """Automatic sync of connected git repositories: each is checked with `git ls-remote` this often and
+    re-indexed (changed files only) when its branch has a new commit. 0 turns automatic sync off."""
+    interval_minutes: int = Field(15, ge=0, le=7 * 24 * 60)
+
+
 class ServerCfg(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8300
@@ -82,6 +88,7 @@ class Settings(BaseModel):
     tts_voices: list[Voice] = []
     web_search: WebSearchCfg = Field(default_factory=WebSearchCfg)
     gateway: GatewayCfg = Field(default_factory=GatewayCfg)
+    repo_sync: RepoSyncCfg = Field(default_factory=RepoSyncCfg)
 
     @property
     def data_dir(self) -> Path:

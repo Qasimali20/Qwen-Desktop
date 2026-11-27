@@ -192,6 +192,7 @@ Everything else (create, disable, reset, delete users) is in **Admin → Users**
 | `ocr`, `asr` | `base_url`, `model` |
 | `tts_voices[]` | `id`, `label`, `base_url`, `model`, `stream_pcm`, `sample_rate` |
 | `web_search` | `provider`: `wikipedia` (default) \| `brave` \| `tavily` \| `searxng`; `api_key_env` (name of the env var holding the key); `url` (SearXNG) |
+| `repo_sync.interval_minutes` | how often connected git repositories are checked for new commits (default 15; 0 = only on request) |
 | `gateway` | `enabled`, `max_concurrent_per_user` (per process), `queue_timeout_s`, `max_body_mb`, `anthropic_default_model`, `max_keys_per_user`, `public_url` |
 
 Web search defaults to Wikipedia because Google and DuckDuckGo are unreachable from this network and
@@ -280,6 +281,25 @@ Sync re-embeds only files whose content hash changed. Jobs hold a 90 s lease in 
 a sweeper in each process (every 30 s) resumes jobs whose lease expired, so a restart mid-index loses
 nothing and the two server processes never run the same job. Tokens are stored server-side and never
 returned by the API.
+
+**Automatic sync.** Every `repo_sync.interval_minutes` (default 15), each git repository with auto-sync
+on (the default, switchable per repository by project editors) is checked with `git ls-remote`, which
+reads the branch's latest commit without downloading anything. Only when that commit differs from the
+indexed one is the normal sync job queued.
+
+- **One check per interval.** Both server processes run the loop, but each check is claimed with a
+  conditional `UPDATE … SET checked_at` in SQLite, so a repository is checked once per interval in total.
+  Queuing (`status ready|error → queued`) is conditional too, so it never collides with a manual *Sync*.
+- **Refs.** A branch is compared by its head and an annotated tag by the commit it points to.
+  `ls-remote` uses the same hardened git environment as cloning: HTTPS only, no prompts, and the token
+  sent in an environment-supplied header.
+- **Failures.** A slow or flaky network fails a check now and then, so a failure is only reported, on
+  the repository card and in *Admin → Health*, after 3 in a row. That catches a revoked token, a deleted
+  repository or a renamed branch. The indexed code stays usable meanwhile.
+- **Known-bad commits.** A commit that failed to index (`meta.attempted_commit`) is not retried until
+  the branch moves or someone syncs by hand.
+- The repository card shows "Auto-sync every 15 min · checked N min ago" and marks syncs it made as
+  "(automatically)".
 
 ### Code sandbox — `sandbox.py`, `sandbox/`
 
@@ -428,7 +448,7 @@ Files live beside the database in `data/`:
 ## HTTP API
 
 All `/api` routes need a session cookie, and `/api/admin/*` needs the admin role. `/v1` needs an API key
-(`Authorization: Bearer qd-…` or `x-api-key`). There are 81 routes; the full schema is at `/docs`
+(`Authorization: Bearer qd-…` or `x-api-key`). There are 83 routes; the full schema is at `/docs`
 (FastAPI OpenAPI).
 
 | Area | Routes |
@@ -438,7 +458,7 @@ All `/api` routes need a session cookie, and `/api/admin/*` needs the admin role
 | Conversations | `GET/POST /api/conversations` · `GET/PATCH/DELETE /api/conversations/{cid}` · `POST …/{cid}/messages` (SSE) · `GET/POST/DELETE …/{cid}/share` |
 | Files | `POST /api/uploads` · `GET /api/attachments/{aid}/content`, `/text` |
 | Projects | CRUD on `/api/projects[/{pid}]` · `POST/DELETE /api/projects/{pid}/files[/{aid}]` |
-| Repositories | `/api/projects/{pid}/repos`: list, `POST /git`, `POST /zip`, `PUT /{rid}/zip`, `POST /{rid}/sync`, `DELETE /{rid}`, `GET /{rid}/files`, `GET /{rid}/file` |
+| Repositories | `/api/projects/{pid}/repos`: list, `POST /git`, `POST /zip`, `PUT /{rid}/zip`, `PATCH /{rid}` (auto-sync), `POST /{rid}/sync`, `DELETE /{rid}`, `GET /{rid}/files`, `GET /{rid}/file` |
 | Workspaces | `GET/POST /api/projects/{pid}/workspaces` · `/api/workspaces/{wid}`: `GET`, `DELETE`, `/changes`, `/diff`, `/patch`, `/archive`, `/discard`, `/commit`, `/push` |
 | Skills, shortcuts | CRUD on `/api/skills`, `/api/prompts` |
 | Connectors | `GET /api/connectors` · admin CRUD on `/api/admin/connectors` and `POST …/{sid}/refresh` |
@@ -471,7 +491,7 @@ refreshes every 30 s:
 - the age of the last backup (warning after 26 h, error after 50 h)
 - the certificate's expiry (warning under 30 days)
 - the running git commit
-- connector status and the web search provider
+- connector status, repository auto-sync and the web search provider
 - failed sign-ins in the last 24 h
 
 ### Logs
@@ -573,10 +593,10 @@ Create temporary accounts for tests and delete them afterwards.
   waits for it, typically a few seconds and longer for a large backlog.
 - **Web search** is Wikipedia-only until a Brave or Tavily key is configured.
 - **MCP:** remote HTTP/SSE servers only. Local (stdio) servers and OAuth sign-in are not supported.
-- **Repositories** sync on demand, not automatically.
 - **Qwen3 Coder on spark-4** is started by a script, not a systemd unit, so it does not come back after a reboot.
 - **Backups** are stored on the same disk as the app.
-- **Tests and CI:** the backend has tests for the secret scanner and conversation summaries only. There is no frontend test suite and no CI yet.
+- **Tests and CI:** the backend has tests for the secret scanner, conversation summaries and repository
+  auto-sync only. There is no frontend test suite and no CI yet.
 - **PDF generation:** some fonts render ₹ as a box in bold text, and very long table cells can
   overflow the page. The quality depends on the code the model writes.
 

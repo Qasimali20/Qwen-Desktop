@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, FileArchive, GitBranch, Loader2, Plus, RefreshCw, Trash2, Upload } from 'lucide-react'
 import { api } from '../api/client'
 import type { Repo } from '../api/types'
-import { formatBytes, relativeDay } from '../lib/text'
+import { formatBytes, relativeDay, timeAgo } from '../lib/text'
 import { useApp } from '../store/app'
 
 const POLL_MS = 2000
@@ -31,8 +31,29 @@ function describe(r: Repo): string {
   if (m.lines) parts.push(`${m.lines.toLocaleString()} lines`)
   if (r.status === 'indexing' && m.files) parts.push(`${m.indexed ?? 0}/${m.files} files`)
   if (m.skipped) parts.push(`${m.skipped} files over the size limit skipped`)
-  if (r.status === 'ready' && m.synced_at) parts.push(`synced ${relativeDay(m.synced_at).toLowerCase()}`)
+  if (r.status === 'ready' && m.synced_at) {
+    parts.push(`synced ${relativeDay(m.synced_at).toLowerCase()}${m.sync_trigger === 'auto' ? ' (automatically)' : ''}`)
+  }
   return parts.join(' · ')
+}
+
+/** Automatic sync state of a git repository, with an on/off switch for people who can edit the project. */
+function AutoSync({ r, minutes, canEdit, onToggle }: { r: Repo; minutes: number; canEdit: boolean; onToggle: () => void }) {
+  if (r.source !== 'git' || !minutes) return null
+  const on = !!r.auto_sync
+  const err = on ? r.meta.auto_sync_error : null
+  const every = minutes % 60 === 0 ? `${minutes / 60} h` : `${minutes} min`
+  return (
+    <div className={`repo-auto${err ? ' warn' : ''}`}>
+      {err ? <AlertTriangle size={11} /> : <RefreshCw size={11} />}
+      <span title={err ?? (on ? `Checked for new commits every ${every}; re-indexed when the branch moves` : undefined)}>
+        {!on ? 'Auto-sync off'
+          : err ? `Auto-sync failing: ${err}`
+          : `Auto-sync · ${r.checked_at ? `checked ${timeAgo(r.checked_at)}` : 'first check soon'}`}
+      </span>
+      {canEdit && <button className="link-btn" onClick={onToggle}>{on ? 'Turn off' : 'Turn on'}</button>}
+    </div>
+  )
 }
 
 /** Code repositories of a project: add from a .zip or a git URL, watch indexing, sync, remove. */
@@ -40,6 +61,7 @@ export function RepoSection({ pid, repos, canEdit, onChange }: {
   pid: string; repos: Repo[]; canEdit: boolean; onChange: () => Promise<void> | void
 }) {
   const notify = useApp((s) => s.notify)
+  const syncMinutes = useApp((s) => s.config?.features.repo_sync_minutes ?? 0)
   const [adding, setAdding] = useState(false)
   const [url, setUrl] = useState('')
   const [ref, setRef] = useState('')
@@ -143,6 +165,8 @@ export function RepoSection({ pid, repos, canEdit, onChange }: {
               )}
             </div>
             <div className={`repo-desc${r.status === 'error' ? ' err' : ''}`}>{describe(r)}</div>
+            <AutoSync r={r} minutes={syncMinutes} canEdit={canEdit}
+              onToggle={() => void run(() => api.setRepoAutoSync(pid, r.id, !r.auto_sync))} />
             {r.status === 'indexing' && !!r.meta.files && (
               <div className="repo-progress"><span style={{ width: `${Math.max(3, ((r.meta.indexed ?? 0) / r.meta.files) * 100)}%` }} /></div>
             )}

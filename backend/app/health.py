@@ -228,6 +228,30 @@ def _connectors(s: State) -> list[Check]:
     return out
 
 
+def _repo_sync(s: State) -> list[Check]:
+    minutes = s.settings.repo_sync.interval_minutes
+    repos = s.db.git_repo_overview()
+    if not repos:
+        return []
+    if not minutes or not s.repos.enabled:
+        return [_check("repo_sync", "Connectors", "Repository auto-sync", "ok",
+                       f"off (repo_sync.interval_minutes is 0) · {len(repos)} git repositories sync on request")]
+    on = [r for r in repos if r["auto_sync"]]
+    failing = [r for r in on if (r["meta"] or {}).get("auto_sync_error")]
+    # Checks claim a repo every interval; three missed intervals means the loop is not running.
+    stale = [r for r in on if r["status"] in ("ready", "error") and r["checked_at"]
+             and time.time() - r["checked_at"] > 3 * minutes * 60 + 120]
+    detail = f"{len(on)}/{len(repos)} git repositories checked every {minutes} min"
+    if failing:
+        names = ", ".join(f"{r['project']}/{r['name']}" for r in failing[:3])
+        return [_check("repo_sync", "Connectors", "Repository auto-sync", "warn",
+                       f"{detail} · {len(failing)} can't be checked: {names} (see the project's Code section)")]
+    if stale:
+        return [_check("repo_sync", "Connectors", "Repository auto-sync", "warn",
+                       f"{detail} · {len(stale)} not checked for over {3 * minutes} min: is the server's sync loop running?")]
+    return [_check("repo_sync", "Connectors", "Repository auto-sync", "ok", detail)]
+
+
 def _search(s: State) -> list[Check]:
     ws = s.settings.web_search
     if ws.provider == "wikipedia":
@@ -263,7 +287,7 @@ async def report(s: State) -> dict:
             return [_check(f"fail:{name}", "Server", name, "error", f"check failed: {type(e).__name__}: {e}"[:300])]
 
     checks = [_chat_models, _services, _sandbox, _database, _disk, _backups, _certificate, _process,
-              _connectors, _search, _security]
+              _connectors, _repo_sync, _search, _security]
     t = time.perf_counter()
     groups = await asyncio.gather(*(guarded(fn.__name__.strip("_").title(), fn) for fn in checks))
     items = [c for g in groups for c in g]

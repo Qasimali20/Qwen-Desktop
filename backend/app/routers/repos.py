@@ -104,6 +104,23 @@ async def add_git(pid: str, body: GitRepoIn, user: User, s: S):
     return s.db.get_repo(r["id"])
 
 
+class RepoPatch(BaseModel):
+    auto_sync: bool
+
+
+@router.patch("/{rid}")
+def update(pid: str, rid: str, body: RepoPatch, user: User, s: S):
+    """Switch automatic sync of a git repository on or off."""
+    s.project(pid, user, edit=True)
+    r = _repo(s, pid, rid)
+    if r["source"] != "git":
+        raise HTTPException(400, "Only git repositories sync automatically")
+    s.db.update_repo(rid, {"auto_sync": int(body.auto_sync)})
+    if not body.auto_sync:
+        s.db.merge_repo_meta(rid, {"auto_sync_error": None, "auto_sync_failures": None})
+    return s.db.get_repo(rid)
+
+
 @router.post("/{rid}/sync")
 async def sync(pid: str, rid: str, user: User, s: S):
     """git: pull the latest commit (only changed files are re-embedded). Uploaded archive: retry indexing
@@ -114,6 +131,7 @@ async def sync(pid: str, rid: str, user: User, s: S):
         raise HTTPException(409, "This repository is already syncing")
     if r["source"] == "git":
         s.db.update_repo(rid, {"status": "queued"})
+        s.db.merge_repo_meta(rid, {"sync_trigger": "manual"})
     elif r["status"] == "error" and (r["meta"] or {}).get("files"):
         s.db.update_repo(rid, {"status": "indexing"})
     else:

@@ -34,7 +34,8 @@ class State:
         self.llm = LLMClient(settings)
         self.extractor = DocumentExtractor(self.llm.http, settings.ocr)
         self.kb = KnowledgeBase(self.db, self.llm.http, settings.embedding)
-        self.repos = RepoService(self.db, self.kb, settings.data_dir / "repos")
+        self.repos = RepoService(self.db, self.kb, settings.data_dir / "repos",
+                                 auto_sync_s=settings.repo_sync.interval_minutes * 60)
         self.sandbox = Sandbox(self.db, settings.data_dir / "sandbox", self.uploads)
         self.workspaces = WorkspaceService(self.db, self.sandbox, settings.data_dir / "workspaces")
         self.skills = SkillService(self.db)

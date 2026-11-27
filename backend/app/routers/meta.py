@@ -22,7 +22,8 @@ async def config(_: User, s: S):
         "voices": [v.model_dump(include={"id", "label"}) for v in st.tts_voices],
         "features": {"asr": st.asr is not None, "ocr": st.ocr is not None, "vision_routing": bool(st.vision_model),
                      "web_search": st.web_search.provider, "analysis": s.sandbox.available,
-                     "knowledge": s.kb.enabled, "gateway": st.gateway.enabled},
+                     "knowledge": s.kb.enabled, "gateway": st.gateway.enabled,
+                     "repo_sync_minutes": st.repo_sync.interval_minutes if s.repos.enabled else 0},
         # The model new workspace chats start on (the user can still pick another); None: the usual default.
         "workspace_model": next((m.id for m in st.chat_models if m.id == st.workspace_model), None),
         "gateway": {"anthropic_default_model": st.model(st.gateway.anthropic_default_model).id,

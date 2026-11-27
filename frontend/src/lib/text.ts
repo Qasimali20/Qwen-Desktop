@@ -22,6 +22,16 @@ export function formatBytes(n: number) {
   return `${(n / 1024 ** 2).toFixed(1)} MB`
 }
 
+/** "just now", "4 min ago", "3 h ago", "2 days ago" */
+export function timeAgo(ts: number): string {
+  const s = Date.now() / 1000 - ts
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`
+  if (s < 86_400) return `${Math.floor(s / 3600)} h ago`
+  const d = Math.floor(s / 86_400)
+  return `${d} day${d === 1 ? '' : 's'} ago`
+}
+
 export function relativeDay(ts: number): string {
   const d = new Date(ts * 1000)
   const today = new Date()

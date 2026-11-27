@@ -49,6 +49,10 @@ LEASE_TTL_S = 90.0
 SWEEP_EVERY_S = 30.0
 JOB_CONCURRENCY = 2                  # per process; embedding concurrency is capped in KnowledgeBase
 FILES_PER_BATCH = 48
+AUTO_SYNC_TICK_S = 60.0              # how often each process looks for repos due a remote check
+AUTO_SYNC_CONCURRENCY = 4            # parallel `git ls-remote` calls per process
+LS_REMOTE_TIMEOUT_S = 90             # GitHub can take a minute to answer from this network
+AUTO_SYNC_REPORT_AFTER = 3          # consecutive failed checks before the repo card / health page show it
 
 CHUNK_TARGET = 2400                  # chars; code chunks follow definitions, so they vary around this
 CHUNK_MIN = 600
@@ -330,6 +334,38 @@ async def clone(url: str, ref: str | None, token: str | None, dest: Path, git_di
     return sha, branch
 
 
+def pick_remote_sha(ls_remote_output: str, ref: str | None) -> str | None:
+    """The commit a branch, tag or HEAD points to, from `git ls-remote` output ("<sha>\t<refname>" lines).
+
+    Preference: the branch, then the commit an annotated tag points to (the peeled `^{}` line), then a
+    lightweight tag. Clones record the commit, so this is what to compare against."""
+    refs = {}
+    for line in ls_remote_output.splitlines():
+        sha, _, name = line.partition("\t")
+        if sha and name:
+            refs[name.strip()] = sha.strip()
+    if not ref or ref == "HEAD":
+        return refs.get("HEAD")
+    for name in (f"refs/heads/{ref}", f"refs/tags/{ref}^{{}}", f"refs/tags/{ref}"):
+        if name in refs:
+            return refs[name]
+    return None
+
+
+async def remote_head(url: str, ref: str | None, token: str | None) -> str:
+    """Latest commit of `ref` (or the default branch) on the remote, without fetching any objects."""
+    patterns = ["HEAD"] if not ref or ref == "HEAD" else [f"refs/heads/{ref}", f"refs/tags/{ref}", f"refs/tags/{ref}^{{}}"]
+    try:
+        out = await _git("ls-remote", "--", url, *patterns, env=git_env(token), timeout=LS_REMOTE_TIMEOUT_S)
+    except FetchError as e:
+        raise FetchError(friendly_git_error(str(e), ref)) from None
+    sha = pick_remote_sha(out, ref)
+    if not sha:
+        raise FetchError(f"Branch or tag “{ref}” was not found in the repository." if ref and ref != "HEAD"
+                         else "The repository has no default branch.")
+    return sha
+
+
 # ---------------------------------------------------------------- chunking
 _DEF = re.compile(
     r"^(?:(?:export|default|pub(?:\([^)]*\))?|public|private|protected|internal|static|abstract|final|async|"
@@ -442,8 +478,9 @@ def layout_summary(paths: list[str], max_entries: int = 60) -> str:
 
 # ---------------------------------------------------------------- service
 class RepoService:
-    def __init__(self, db: Database, kb: KnowledgeBase, work_dir: Path):
+    def __init__(self, db: Database, kb: KnowledgeBase, work_dir: Path, auto_sync_s: float = 0):
         self.db = db
+        self.auto_sync_s = auto_sync_s          # 0: git repos only sync when someone asks
         self.kb = kb
         self.work = work_dir
         self.work.mkdir(parents=True, exist_ok=True)
@@ -451,6 +488,7 @@ class RepoService:
         self._sem = asyncio.Semaphore(JOB_CONCURRENCY)
         self._tasks: dict[str, asyncio.Task] = {}
         self._sweeper: asyncio.Task | None = None
+        self._auto: asyncio.Task | None = None
 
     @property
     def enabled(self) -> bool:
@@ -462,12 +500,58 @@ class RepoService:
     # -- lifecycle ------------------------------------------------------------
     def start(self) -> None:
         self._sweeper = asyncio.create_task(self._sweep_forever())
+        if self.auto_sync_s > 0 and self.enabled:
+            self._auto = asyncio.create_task(self._auto_sync_forever())
 
     async def stop(self) -> None:
-        for t in [self._sweeper, *self._tasks.values()]:
-            if t:
-                t.cancel()
-        await asyncio.gather(*[t for t in [self._sweeper, *self._tasks.values()] if t], return_exceptions=True)
+        tasks = [t for t in [self._sweeper, self._auto, *self._tasks.values()] if t]
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    # -- automatic sync -------------------------------------------------------
+    async def _auto_sync_forever(self) -> None:
+        """Check git repos for new commits every `auto_sync_s`. Both server processes run this loop; the
+        check of each repo is claimed atomically in the database, so it runs once per interval in total."""
+        await asyncio.sleep(AUTO_SYNC_TICK_S / 2)     # let start-up (and job resumption) settle first
+        sem = asyncio.Semaphore(AUTO_SYNC_CONCURRENCY)
+        while True:
+            try:
+                before = time.time() - self.auto_sync_s
+                due = [r for r in self.db.repos_due_for_check(before) if self.db.claim_repo_check(r["id"], before)]
+                if due:
+                    await asyncio.gather(*(self._check_remote(r, sem) for r in due))
+            except Exception:   # the loop must survive transient DB errors
+                log.exception("repo auto-sync pass failed")
+            await asyncio.sleep(AUTO_SYNC_TICK_S)
+
+    async def _check_remote(self, repo: dict, sem: asyncio.Semaphore) -> None:
+        rid = repo["id"]
+        meta = repo["meta"] or {}
+        async with sem:
+            try:
+                head = await remote_head(repo["url"], repo["ref"], repo["auth_token"])
+            except FetchError as e:
+                # A slow or flaky link fails now and then; only a repeated failure (revoked token, deleted
+                # repository, renamed branch) is shown on the card and on Admin → Health. The index stays usable.
+                failures = int(meta.get("auto_sync_failures") or 0) + 1
+                log.warning("auto-sync check of repo %s failed (%d in a row): %s", repo["name"], failures, e)
+                patch: dict = {"auto_sync_failures": failures}
+                if failures >= AUTO_SYNC_REPORT_AFTER:
+                    patch["auto_sync_error"] = str(e)[:300]
+                self.db.merge_repo_meta(rid, patch)
+                return
+        if meta.get("auto_sync_error") or meta.get("auto_sync_failures"):
+            self.db.merge_repo_meta(rid, {"auto_sync_error": None, "auto_sync_failures": None})
+        if head == repo["commit_sha"]:
+            return
+        if repo["status"] == "error" and meta.get("attempted_commit") == head:
+            return        # this exact commit already failed to index; wait for a new one (or a manual retry)
+        if self.db.queue_repo_sync(rid):
+            self.db.merge_repo_meta(rid, {"sync_trigger": "auto"})
+            log.info("auto-sync: repo %s has a new commit (%s → %s), syncing", repo["name"],
+                     (repo["commit_sha"] or "none")[:7], head[:7])
+            self.schedule(rid)
 
     async def _sweep_forever(self) -> None:
         while True:
@@ -554,6 +638,8 @@ class RepoService:
             tmp = Path(tempfile.mkdtemp(prefix=f"clone-{rid[:8]}-", dir=self.work))
             try:
                 commit, branch = await clone(repo["url"], repo["ref"], repo["auth_token"], tmp / "src")
+                # Lets auto-sync tell "this commit failed to index" from "there is a newer commit".
+                self.db.merge_repo_meta(rid, {"attempted_commit": commit})
                 self._renew(rid)
                 scan = await asyncio.to_thread(scan_dir, tmp / "src")
             finally:

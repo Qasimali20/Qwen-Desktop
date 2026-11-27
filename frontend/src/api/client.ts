@@ -135,6 +135,8 @@ export const api = {
   addZipRepo: (pid: string, file: File) => uploadAs<Repo>(`/projects/${pid}/repos/zip`, file, 'POST'),
   replaceZipRepo: (pid: string, rid: string, file: File) => uploadAs<Repo>(`/projects/${pid}/repos/${rid}/zip`, file, 'PUT'),
   syncRepo: (pid: string, rid: string) => req<Repo>(`/projects/${pid}/repos/${rid}/sync`, { method: 'POST' }),
+  setRepoAutoSync: (pid: string, rid: string, autoSync: boolean) =>
+    req<Repo>(`/projects/${pid}/repos/${rid}`, json('PATCH', { auto_sync: autoSync })),
   deleteRepo: (pid: string, rid: string) => req<void>(`/projects/${pid}/repos/${rid}`, { method: 'DELETE' }),
   repoFile: (rid: string, path: string) => req<RepoFile>(`/repos/${rid}/file?path=${encodeURIComponent(path)}`),
 

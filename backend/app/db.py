@@ -310,6 +310,9 @@ MIGRATIONS = [
     ("conversations", "workspace_id", "TEXT REFERENCES workspaces(id) ON DELETE SET NULL"),
     # Rolling summary of the turns that no longer fit the context (summary.py): JSON {text, upto_id, upto_seq, …}.
     ("conversations", "context_summary", "TEXT"),
+    # Automatic sync of git repositories (RepoService._auto_sync_forever): per-repo switch, last remote check.
+    ("repos", "auto_sync", "INTEGER NOT NULL DEFAULT 1"),
+    ("repos", "checked_at", "REAL"),
 ]
 TEAM_ACCESS = ("none", "view", "edit")
 POST_MIGRATION_INDEXES = """
@@ -921,8 +924,8 @@ class Database:
             f"JOIN repo_files f ON f.id = c.file_id WHERE c.id IN ({q})", tuple(ids))}
 
     # -- repositories ---------------------------------------------------------
-    REPO_PUBLIC_COLS = ("id, project_id, name, source, url, ref, commit_sha, status, meta, added_by, created_at, "
-                        "updated_at")
+    REPO_PUBLIC_COLS = ("id, project_id, name, source, url, ref, commit_sha, status, meta, added_by, auto_sync, "
+                        "checked_at, created_at, updated_at")
 
     def create_repo(self, pid: str, name: str, source: str, added_by: str, url: str | None = None,
                     ref: str | None = None, auth_token: str | None = None) -> dict:
@@ -975,6 +978,29 @@ class Database:
         return [r["id"] for r in self._all(
             "SELECT id FROM repos WHERE status IN ('queued', 'fetching', 'indexing') "
             "AND (lease_until IS NULL OR lease_until < ?)", (now(),))]
+
+    _CHECKABLE = "source = 'git' AND auto_sync = 1 AND status IN ('ready', 'error')"
+
+    def repos_due_for_check(self, checked_before: float, limit: int = 50) -> list[dict]:
+        """Git repos with auto-sync on whose remote was last checked before `checked_before` (oldest first)."""
+        return self._all(f"SELECT id, name, url, ref, auth_token, commit_sha, status, meta FROM repos "
+                         f"WHERE {self._CHECKABLE} AND (checked_at IS NULL OR checked_at < ?) "
+                         "ORDER BY COALESCE(checked_at, 0) LIMIT ?", (checked_before, limit))
+
+    def claim_repo_check(self, rid: str, checked_before: float) -> bool:
+        """Atomically take the next remote check of a repo, so only one server process runs it per interval."""
+        return self._exec(f"UPDATE repos SET checked_at = ? WHERE id = ? AND {self._CHECKABLE} "
+                          "AND (checked_at IS NULL OR checked_at < ?)", (now(), rid, checked_before)) == 1
+
+    def git_repo_overview(self) -> list[dict]:
+        """Every git repo's auto-sync state, for the admin health report."""
+        return self._all("SELECT r.name, p.name AS project, r.auto_sync, r.checked_at, r.status, r.meta FROM repos r "
+                         "JOIN projects p ON p.id = r.project_id WHERE r.source = 'git'")
+
+    def queue_repo_sync(self, rid: str) -> bool:
+        """Queue a sync unless one is already queued or running (a manual sync may have just started)."""
+        return self._exec("UPDATE repos SET status = 'queued', updated_at = ? WHERE id = ? "
+                          "AND status IN ('ready', 'error')", (now(), rid)) == 1
 
     def sync_repo_files(self, rid: str, files: list[dict]) -> dict[str, int]:
         """Make repo_files match `files` (path, lang, size, lines, sha, text). Unchanged files keep their
