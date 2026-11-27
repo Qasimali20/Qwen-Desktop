@@ -5,6 +5,7 @@ import time
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.openapi.docs import get_swagger_ui_html
 from pydantic import BaseModel, Field
 
 from .. import audit, auth, health
@@ -106,6 +107,16 @@ def activity(_: Admin, s: S, limit: int = 100, before: int | None = None, catego
 @router.get("/health")
 async def health_report(_: Admin, s: S):
     return await health.report(s)
+
+
+@router.get("/openapi.json", include_in_schema=False)
+def openapi_schema(_: Admin, request: Request):
+    return request.app.openapi()
+
+
+@router.get("/docs", include_in_schema=False)
+def api_docs(_: Admin):
+    return get_swagger_ui_html(openapi_url="/api/admin/openapi.json", title="Qwen Desktop API")
 
 
 @router.get("/usage")

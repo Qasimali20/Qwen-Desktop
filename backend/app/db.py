@@ -14,6 +14,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .secretbox import SecretBox
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -344,7 +346,9 @@ def _row(r: sqlite3.Row | None) -> dict[str, Any] | None:
 
 
 class Database:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, box: SecretBox | None = None):
+        """`box` encrypts stored credentials (repo tokens, MCP headers); without one they are kept as given."""
+        self.box = box
         path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._c = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
@@ -361,6 +365,54 @@ class Database:
             if col not in cols:
                 self._c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
         self._c.executescript(POST_MIGRATION_INDEXES)
+
+    # -- credentials at rest (secretbox.py) --------------------------------------
+    def _seal(self, value: str | None) -> str | None:
+        return self.box.seal(value) if self.box else value
+
+    def _open(self, value: str | None) -> str | None:
+        return self.box.open(value) if self.box else value
+
+    def _open_repo(self, r: dict | None) -> dict | None:
+        if r and "auth_token" in r:
+            r["auth_token"] = self._open(r["auth_token"])
+        return r
+
+    def _seal_headers(self, headers: dict | None) -> dict | str:
+        """MCP headers are stored as a sealed JSON string; an empty dict stays a plain `{}`."""
+        return self._seal(json.dumps(headers)) if headers and self.box else (headers or {})
+
+    def _open_mcp(self, r: dict | None) -> dict | None:
+        if r and isinstance(r.get("headers"), str):
+            plain = self._open(r["headers"])
+            r["headers"] = json.loads(plain) if plain else {}
+        return r
+
+    def encrypt_secrets(self) -> int:
+        """Seal credentials stored before encryption existed (idempotent; safe with two processes starting at
+        once: each row is only replaced if it still holds the plain value read). Returns rows converted."""
+        if not self.box:
+            return 0
+        n = 0
+        for r in self._all("SELECT id, auth_token FROM repos WHERE auth_token IS NOT NULL AND auth_token != '' "
+                           "AND auth_token NOT LIKE 'enc:v1:%'"):
+            n += self._exec("UPDATE repos SET auth_token = ? WHERE id = ? AND auth_token = ?",
+                            (self._seal(r["auth_token"]), r["id"], r["auth_token"]))
+        with self._lock:
+            rows = self._c.execute("SELECT id, headers FROM mcp_servers WHERE headers IS NOT NULL "
+                                   "AND headers NOT LIKE '\"enc:v1:%'").fetchall()
+        for sid, raw in rows:
+            headers = json.loads(raw) if raw else {}
+            if isinstance(headers, dict) and headers:
+                n += self._exec("UPDATE mcp_servers SET headers = ? WHERE id = ? AND headers = ?",
+                                (json.dumps(self._seal_headers(headers)), sid, raw))
+        return n
+
+    def plaintext_secret_count(self) -> int:
+        """Stored credentials that are not encrypted (for the health report)."""
+        return self._one("SELECT (SELECT COUNT(*) FROM repos WHERE auth_token IS NOT NULL AND auth_token != '' "
+                         "AND auth_token NOT LIKE 'enc:v1:%') + (SELECT COUNT(*) FROM mcp_servers WHERE headers "
+                         "NOT IN ('{}', 'null', '') AND headers NOT LIKE '\"enc:v1:%') AS n")["n"]
 
     # -- primitives -----------------------------------------------------------
     def _all(self, sql: str, args: tuple | dict = ()) -> list[dict]:
@@ -939,17 +991,19 @@ class Database:
             self._c.execute(
                 "INSERT INTO repos(id, project_id, name, source, url, ref, auth_token, status, meta, added_by, "
                 "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', '{}', ?, ?, ?)",
-                (rid, pid, unique, source, url, ref, auth_token, added_by, t, t))
+                (rid, pid, unique, source, url, ref, self._seal(auth_token), added_by, t, t))
         return self.get_repo(rid)
 
     def get_repo(self, rid: str, private: bool = False) -> dict | None:
         cols = "*" if private else self.REPO_PUBLIC_COLS
-        return self._one(f"SELECT {cols} FROM repos WHERE id = ?", (rid,))
+        return self._open_repo(self._one(f"SELECT {cols} FROM repos WHERE id = ?", (rid,)))
 
     def list_repos(self, pid: str) -> list[dict]:
         return self._all(f"SELECT {self.REPO_PUBLIC_COLS} FROM repos WHERE project_id = ? ORDER BY created_at", (pid,))
 
     def update_repo(self, rid: str, fields: dict) -> None:
+        if "auth_token" in fields:
+            fields = {**fields, "auth_token": self._seal(fields["auth_token"])}
         self._update("repos", rid, {**fields, "updated_at": now()})
 
     def merge_repo_meta(self, rid: str, patch: dict) -> None:
@@ -983,9 +1037,10 @@ class Database:
 
     def repos_due_for_check(self, checked_before: float, limit: int = 50) -> list[dict]:
         """Git repos with auto-sync on whose remote was last checked before `checked_before` (oldest first)."""
-        return self._all(f"SELECT id, name, url, ref, auth_token, commit_sha, status, meta FROM repos "
-                         f"WHERE {self._CHECKABLE} AND (checked_at IS NULL OR checked_at < ?) "
-                         "ORDER BY COALESCE(checked_at, 0) LIMIT ?", (checked_before, limit))
+        return [self._open_repo(r) for r in self._all(
+            f"SELECT id, name, url, ref, auth_token, commit_sha, status, meta FROM repos "
+            f"WHERE {self._CHECKABLE} AND (checked_at IS NULL OR checked_at < ?) "
+            "ORDER BY COALESCE(checked_at, 0) LIMIT ?", (checked_before, limit))]
 
     def claim_repo_check(self, rid: str, checked_before: float) -> bool:
         """Atomically take the next remote check of a repo, so only one server process runs it per interval."""
@@ -1165,10 +1220,11 @@ class Database:
 
     # -- MCP servers ------------------------------------------------------------
     def list_mcp_servers(self, enabled_only: bool = False) -> list[dict]:
-        return self._all("SELECT * FROM mcp_servers" + (" WHERE enabled = 1" if enabled_only else "") + " ORDER BY label")
+        return [self._open_mcp(r) for r in self._all(
+            "SELECT * FROM mcp_servers" + (" WHERE enabled = 1" if enabled_only else "") + " ORDER BY label")]
 
     def get_mcp_server(self, sid: str) -> dict | None:
-        return self._one("SELECT * FROM mcp_servers WHERE id = ?", (sid,))
+        return self._open_mcp(self._one("SELECT * FROM mcp_servers WHERE id = ?", (sid,)))
 
     def mcp_name_taken(self, name: str, exclude: str | None = None) -> bool:
         return self._one("SELECT 1 FROM mcp_servers WHERE name = ? AND id IS NOT ?", (name, exclude)) is not None
@@ -1176,11 +1232,15 @@ class Database:
     def create_mcp_server(self, fields: dict, created_by: str) -> dict:
         sid, t = new_id(), now()
         row = {"id": sid, "created_by": created_by, "created_at": t, "updated_at": t, **fields}
+        if "headers" in row:
+            row["headers"] = self._seal_headers(row["headers"])
         row = {k: json.dumps(v) if k in _JSON_COLS else v for k, v in row.items()}
         self._exec(f"INSERT INTO mcp_servers({', '.join(row)}) VALUES ({', '.join('?' * len(row))})", tuple(row.values()))
         return self.get_mcp_server(sid)
 
     def update_mcp_server(self, sid: str, fields: dict, touch: bool = True) -> dict:
+        if "headers" in fields:
+            fields = {**fields, "headers": self._seal_headers(fields["headers"])}
         self._update("mcp_servers", sid, {**fields, **({"updated_at": now()} if touch else {})})
         return self.get_mcp_server(sid)
 

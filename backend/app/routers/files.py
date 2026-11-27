@@ -55,13 +55,36 @@ async def upload(user: User, s: S, file: UploadFile = File(...)):
     return public_attachment(await ingest(s, user, file, None))
 
 
+# Files people upload or the model writes are untrusted, and they are served from the app's own origin. Only
+# types a browser displays without running anything are shown inline: raster images, PDF, and text as text.
+# Everything else (HTML, SVG, XML, JS, …) is always downloaded and, if opened anyway, sandboxed with no scripts.
+INLINE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "application/pdf"}
+TEXT_AS_PLAIN = {"text/plain", "text/csv", "text/markdown", "text/x-python", "application/json", "application/x-yaml"}
+SANDBOX_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
+
+
+def content_policy(mime: str, download: bool) -> tuple[str, str, dict[str, str]]:
+    """(media type, disposition, extra headers) for serving an attachment safely."""
+    mime = (mime or "").split(";")[0].strip().lower()
+    headers = {"X-Content-Type-Options": "nosniff"}
+    if mime != "application/pdf":            # Chrome's PDF viewer refuses to run in a sandboxed document
+        headers["Content-Security-Policy"] = SANDBOX_CSP
+    if download:
+        return mime or "application/octet-stream", "attachment", headers
+    if mime in INLINE_TYPES:
+        return mime, "inline", headers
+    if mime in TEXT_AS_PLAIN or (mime.startswith("text/") and mime not in ("text/html", "text/xml")):
+        return "text/plain; charset=utf-8", "inline", headers
+    return mime or "application/octet-stream", "attachment", headers
+
+
 @router.get("/attachments/{aid}/content")
 def attachment_content(aid: str, user: User, s: S, download: bool = False):
     att = s.readable_attachment(aid, user)
-    return FileResponse(att["path"], media_type=att["mime"], filename=att["filename"],
-                        content_disposition_type="attachment" if download else "inline",
-                        headers={"Cache-Control": "private, max-age=31536000, immutable",
-                                 "X-Content-Type-Options": "nosniff"})
+    media_type, disposition, headers = content_policy(att["mime"], download)
+    return FileResponse(att["path"], media_type=media_type, filename=att["filename"],
+                        content_disposition_type=disposition,
+                        headers={"Cache-Control": "private, max-age=31536000, immutable", **headers})
 
 
 @router.get("/attachments/{aid}/text")

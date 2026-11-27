@@ -403,7 +403,9 @@ send*, *Send anyway* or *Edit*. Uploaded documents and indexed repository files 
 | Model-generated code ↔ host | Docker with no network, read-only root, all capabilities dropped, `no-new-privileges`, non-root user, memory/CPU/PID limits, read-only input mounts. Workspace git directory mounted read-only and outside the tree. |
 | Model ↔ internal network | `fetch_url` allows only globally routable addresses, checked on every redirect hop. |
 | External content ↔ model | Tool and MCP results are framed as data; external actions require user confirmation (prompt-level). |
-| Credentials at rest | Passwords: scrypt. Sessions and API keys: SHA-256 digests only. Repository tokens and MCP headers: stored server-side, never returned. Backups: mode 600. |
+| Credentials at rest | Passwords: scrypt. Sessions and API keys: SHA-256 digests only. Repository tokens and MCP headers: encrypted (Fernet, `secretbox.py`) with a key kept outside `data/` and the backups, never returned by the API. Backups: mode 600. |
+| Untrusted files ↔ the app's origin | Uploaded and model-generated files are served inline only if the browser can't execute them (raster images, PDF, text as `text/plain`). HTML, SVG, XML, JS etc. are always downloaded, and every attachment response carries `nosniff` plus a `sandbox` CSP (PDF excepted). The declared upload type is not trusted for this. |
+| Browser hardening | Every response: `X-Frame-Options: SAMEORIGIN`, CSP `frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'`, `nosniff`, `Referrer-Policy: same-origin`, COOP `same-origin`, and a Permissions-Policy allowing only the microphone (same origin). Scripts and styles are not restricted, so the sandboxed artifact previews keep working. |
 | Credentials in content | Secret guard before sending; masking of uploads and indexed code. |
 | Accountability | Activity log of sign-ins (including failures and the reason), user, key, connector and team-content changes, with actor, time and IP. No secrets are logged. Kept 365 days. |
 
@@ -412,9 +414,8 @@ send*, *Send anyway* or *Edit*. Uploaded documents and indexed repository files 
 - The HTTPS certificate is self-signed.
 - The app user needs Docker access, which is root-equivalent on the host. Run the app on a dedicated
   machine or user.
-- Repository tokens and MCP headers are stored in plain text in SQLite (protected by file permissions,
-  not encryption).
-- The OpenAPI schema (`/docs`, `/openapi.json`) is served without sign-in. It reveals routes, not data.
+- Credentials are encrypted with a key on the same machine. That protects the database and backups if
+  they are copied away, not against someone who can read the app user's files.
 - The protection against model-driven external actions is an instruction to the model, not an
   enforced approval step.
 
@@ -448,8 +449,8 @@ Files live beside the database in `data/`:
 ## HTTP API
 
 All `/api` routes need a session cookie, and `/api/admin/*` needs the admin role. `/v1` needs an API key
-(`Authorization: Bearer qd-…` or `x-api-key`). There are 83 routes; the full schema is at `/docs`
-(FastAPI OpenAPI).
+(`Authorization: Bearer qd-…` or `x-api-key`). There are 83 routes. Admins can browse the full schema at
+`/api/admin/docs` (Swagger UI; raw schema at `/api/admin/openapi.json`). It is not public.
 
 | Area | Routes |
 |---|---|
@@ -512,7 +513,13 @@ the audit trail for user and admin actions.
 - `config.yaml`
 - a git bundle of all branches, plus any uncommitted changes as a patch
 
-A `flock` prevents overlapping runs. Output goes to `backup.log` in the same folder. The archives sit on
+A `flock` prevents overlapping runs.
+
+**The credentials key is not in the backups.** Repository tokens and connector headers are encrypted with
+`~/.config/qwen-desktop/secret.key` (override: `QWEN_DESKTOP_SECRET_KEY_FILE`). It is created on first
+start with mode 600 and deliberately kept out of `data/` and the archives. Store a copy somewhere safe,
+such as a password manager. Restoring without it loses only those credentials: repositories and
+connectors then report an auth error until someone re-enters the token. Output goes to `backup.log` in the same folder. The archives sit on
 the app's own disk, so copy them to another machine for protection against disk loss.
 
 Restore:

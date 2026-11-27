@@ -1,6 +1,7 @@
 """Qwen Desktop API."""
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -13,6 +14,8 @@ from . import audit
 from .routers import (admin, auth, connectors, conversations, files, gateway, keys, meta, projects, prompts, repos,
                       shares, skills, voice, workspaces)
 from .state import State
+
+log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -27,24 +30,41 @@ async def lifespan(app: FastAPI):
     s.repos.start()   # also resumes index jobs interrupted by a restart
     s.workspaces.start()
     audit.prune(s.db)
+    if n := s.db.encrypt_secrets():
+        log.info("encrypted %d stored credentials that were kept in plain text", n)
     yield
     await s.workspaces.stop()
     await s.repos.stop()
     await s.llm.close()
 
 
-app = FastAPI(title="Qwen Desktop", lifespan=lifespan)
+# The OpenAPI schema and docs are served to signed-in admins only (routers/admin.py), not publicly.
+app = FastAPI(title="Qwen Desktop", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 for r in (auth, admin, meta, projects, repos, workspaces, prompts, skills, connectors, files, conversations, shares, voice,
           keys, gateway):
     app.include_router(r.router)
 app.include_router(repos.by_id)
 
 
+# Defaults for every response; a route that sets its own (attachments set a sandbox CSP) keeps it.
+SECURITY_HEADERS = {
+    "X-Frame-Options": "SAMEORIGIN",                      # no framing by other sites (clickjacking)
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    # The mic is used for dictation and voice mode; nothing else needs device access.
+    "Permissions-Policy": "microphone=(self), camera=(), geolocation=(), payment=(), usb=()",
+    # Narrow, compatibility-safe CSP: blocks framing, plugins, <base> hijacking and off-site form posts without
+    # restricting scripts/styles (the artifact panel's sandboxed previews and KaTeX need inline styles).
+    "Content-Security-Policy": "frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
+}
+
+
 @app.middleware("http")
 async def security_headers(request, call_next):
     resp = await call_next(request)
-    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-    resp.headers.setdefault("Referrer-Policy", "same-origin")
+    for k, v in SECURITY_HEADERS.items():
+        resp.headers.setdefault(k, v)
     return resp
 
 

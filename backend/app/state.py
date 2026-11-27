@@ -19,6 +19,7 @@ from .knowledge import KnowledgeBase
 from .llm import LLMClient
 from .repos import RepoService
 from .sandbox import Sandbox
+from .secretbox import SecretBox
 from .skills import SkillService
 from .workspaces import WorkspaceService
 
@@ -28,7 +29,7 @@ HEALTH_TTL = 10.0
 class State:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.db = Database(settings.data_dir / "qwen-desktop.db")
+        self.db = Database(settings.data_dir / "qwen-desktop.db", box=SecretBox.from_file())
         self.uploads = settings.data_dir / "uploads"
         self.uploads.mkdir(parents=True, exist_ok=True)
         self.llm = LLMClient(settings)

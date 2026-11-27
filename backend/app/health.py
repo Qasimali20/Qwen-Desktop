@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .sandbox import IMAGE
+from .secretbox import DEFAULT_KEY_FILE
 
 if TYPE_CHECKING:
     from .state import State
@@ -270,8 +271,29 @@ def _security(s: State) -> list[Check]:
     detail = (f"{n} failed sign-in{'s' if n != 1 else ''} in 24 h from {ips} address{'es' if ips != 1 else ''}"
               if n else "no failed sign-ins in 24 h")
     return [_check("logins", "Security", "Sign-ins", status, detail + " (details under Activity)"),
+            *_credentials(s),
             _check("admins", "Security", "Admin accounts", "ok" if admins <= 3 else "warn",
                    f"{admins} active admin{'s' if admins != 1 else ''}")]
+
+
+def _credentials(s: State) -> list[Check]:
+    """Repo tokens and MCP headers must be encrypted, with the key readable by this user only."""
+    key = Path(os.environ.get("QWEN_DESKTOP_SECRET_KEY_FILE") or DEFAULT_KEY_FILE)
+    plain = s.db.plaintext_secret_count()
+    if not s.db.box:
+        return [_check("secrets", "Security", "Stored credentials", "warn", "encryption is not configured")]
+    if plain:
+        return [_check("secrets", "Security", "Stored credentials", "error",
+                       f"{plain} stored without encryption; restart the server to encrypt them")]
+    try:
+        mode = key.stat().st_mode & 0o777
+    except OSError:
+        return [_check("secrets", "Security", "Stored credentials", "error", f"key file {key} is missing")]
+    if mode & 0o077:
+        return [_check("secrets", "Security", "Stored credentials", "warn",
+                       f"encrypted, but the key file is readable by others (mode {mode:o}): chmod 600 {key}")]
+    return [_check("secrets", "Security", "Stored credentials", "ok",
+                   f"repository tokens and connector headers encrypted · key {key} (back it up separately)")]
 
 
 # ---------------------------------------------------------------- report
