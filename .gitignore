@@ -1,0 +1,13 @@
+# Runtime state (database, uploads, workspaces, certs, logs) — backed up by scripts/backup.sh, never committed
+data/
+backend/.venv/
+frontend/node_modules/
+frontend/dist/
+sandbox/site/
+__pycache__/
+*.py[oc]
+.pytest_cache/
+.ruff_cache/
+*.tsbuildinfo
+.env
+.env.*

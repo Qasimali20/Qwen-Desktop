@@ -1,0 +1,103 @@
+# Qwen Desktop — model fleet.
+# Each chat model may list several replicas; requests round-robin across healthy ones.
+
+server:
+  host: 0.0.0.0
+  port: 8300
+  data_dir: ./data
+
+chat_models:
+  - id: qwen3.6-35b
+    label: Qwen3.6 35B
+    description: Smartest — thinking, tools, 200k context
+    model: qwen3.6-35b-a3b-fp8
+    replicas:
+      - http://10.170.0.240:8001/v1   # spark-2
+      - http://10.170.0.229:8002/v1   # spark-4
+    context: 200000
+    max_tokens: 16384
+    tools: true
+    thinking: true        # supports chat_template_kwargs.enable_thinking
+    vision: false         # images are routed to the vision model
+    default: true
+
+  - id: qwen3-30b-instruct
+    label: Qwen3 30B Instruct
+    description: Fast replies, tools
+    model: qwen-chat
+    replicas:
+      - http://10.170.1.132:8103/v1   # spark-3
+    context: 16384
+    max_tokens: 4096
+    tools: true
+    thinking: false
+    vision: false
+
+  - id: qwen3-coder-30b
+    label: Qwen3 Coder 30B
+    description: Code — fast, tools, 64k context
+    model: qwen3-coder-30b-a3b
+    replicas:
+      - http://10.170.0.229:8003/v1   # spark-4 (~/Desktop/models/run-qwen3-coder.sh)
+    context: 65536
+    max_tokens: 8192
+    tools: true
+    thinking: false
+    vision: false
+
+  - id: qwen3-vl-30b
+    label: Qwen3-VL 30B
+    description: Vision — sees images natively
+    model: qwen3-vl-30b-a3b-fp8
+    replicas:
+      - http://10.170.1.143:8011/v1   # spark-1
+    context: 16384
+    max_tokens: 4096
+    tools: false
+    thinking: false
+    vision: true
+
+# Knowledge base: embeddings for project documents (retrieval-augmented generation).
+# Qwen3-Embedding is trained with Matryoshka learning, so vectors are truncated to `dims`
+# client-side (vLLM refuses the `dimensions` parameter for this model).
+embedding:
+  base_url: http://10.170.0.240:8093/v1   # spark-2
+  model: qwen3-embedding-4b
+  dims: 1024
+
+# Used to give non-vision models eyes (image descriptions + analyze_image tool).
+vision_model: qwen3-vl-30b
+
+# New chats that work in a project workspace start on this model (fast agentic coding).
+workspace_model: qwen3-coder-30b
+
+ocr:
+  base_url: http://10.170.1.143:8012/v1
+  model: paddleocr-vl-1.6
+
+asr:
+  base_url: http://10.170.1.143:8092/v1
+  model: qwen3-asr
+
+tts_voices:
+  - id: qwen3-tts
+    label: Qwen3-TTS (cloned voice)
+    base_url: http://10.170.1.143:8094/v1
+    model: Qwen3-TTS-12Hz-0.6B-Base
+    stream_pcm: true
+    sample_rate: 24000
+  - id: omnivoice
+    label: OmniVoice
+    base_url: http://10.170.1.143:8091/v1
+    model: k2-fsa/OmniVoice
+
+# Model used for background chores (titles). Falls back to the default chat model.
+utility_model: qwen3-30b-instruct
+
+# Web search. Google/DuckDuckGo are blocked from this network and scraped engines serve
+# captchas, so use an API. Keys are read from the environment variable named here.
+#   provider: brave   api_key_env: BRAVE_API_KEY
+#   provider: tavily  api_key_env: TAVILY_API_KEY
+#   provider: searxng url: http://localhost:8888
+web_search:
+  provider: wikipedia
