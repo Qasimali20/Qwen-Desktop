@@ -1159,6 +1159,13 @@ class Database:
         sql = "SELECT * FROM audit_log" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC LIMIT ?"
         return self._all(sql, (*args, limit))
 
+    def security_summary(self, since: float) -> dict:
+        """Failed sign-ins since `since` (and from how many addresses) and the number of active admins."""
+        r = self._one("SELECT COUNT(*) AS n, COUNT(DISTINCT ip) AS ips FROM audit_log "
+                      "WHERE action = 'auth.login_failed' AND at >= ?", (since,))
+        admins = self._one("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND disabled = 0")["n"]
+        return {"failed_logins": r["n"], "failed_ips": r["ips"], "admins": admins}
+
     def prune_audit(self, older_than: float) -> int:
         return self._exec("DELETE FROM audit_log WHERE at < ?", (older_than,))
 

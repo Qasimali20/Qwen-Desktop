@@ -933,3 +933,28 @@ kbd {
 .activity-table tr.alert .activity-text { color: var(--warn); font-weight: 500; }
 .nowrap { white-space: nowrap; }
 .row-center { display: flex; justify-content: center; margin-top: 12px; }
+
+/* Admin → Health */
+.hc-banner { display: flex; align-items: flex-start; gap: 10px; padding: 12px 16px; border-radius: var(--radius); margin-bottom: 14px;
+  border: 1px solid color-mix(in srgb, var(--ok) 30%, transparent); background: color-mix(in srgb, var(--ok) 7%, transparent); }
+.hc-banner.warn { border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.hc-banner.error { border-color: color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.hc-banner .hc-icon { margin-top: 2px; }
+.hc-banner strong { display: block; font-size: 14.5px; }
+.hc-banner span { color: var(--text-2); font-size: 12.5px; }
+.hc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; align-items: start; }
+.hc-card { padding: 14px 16px 8px; }
+.hc-grid > .card { margin-top: 0; }   /* the grid gap spaces the cards */
+.hc-list { list-style: none; margin: 0; padding: 0; }
+.hc-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); }
+.hc-row:first-child { border-top: 0; padding-top: 0; }
+.hc-icon { flex: none; margin-top: 1px; }
+.hc-icon.ok { color: var(--ok); }
+.hc-icon.warn { color: var(--warn); }
+.hc-icon.error { color: var(--danger); }
+.hc-main { flex: 1; min-width: 0; }
+.hc-label { font-size: 13.5px; font-weight: 500; }
+.hc-detail { font-size: 12.5px; color: var(--text-2); overflow-wrap: anywhere; }
+.hc-row.error .hc-detail { color: var(--danger); }
+.hc-ms { flex: none; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+@media (max-width: 600px) { .hc-grid { grid-template-columns: 1fr; } }

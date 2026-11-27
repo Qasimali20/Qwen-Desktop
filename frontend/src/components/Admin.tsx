@@ -5,6 +5,7 @@ import type { AdminUser, ApiKey, Usage } from '../api/types'
 import { useApp } from '../store/app'
 import { ActivityTab } from './AdminActivity'
 import { ConnectorsTab } from './AdminConnectors'
+import { HealthTab } from './AdminHealth'
 
 const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : `${n}`)
 
@@ -125,7 +126,6 @@ function UsersTab({ users, usage, reload }: { users: AdminUser[]; usage: Usage |
 
 function UsageTab({ usage, users, days, setDays }: { usage: Usage | null; users: AdminUser[]; days: number; setDays: (d: number) => void }) {
   const models = useApp((s) => s.config?.models ?? [])
-  const health = useApp((s) => s.config)
   if (!usage) return <Loader2 className="spin" />
   const total = usage.by_model.reduce((a, m) => ({
     replies: a.replies + m.replies, prompt: a.prompt + m.prompt_tokens, completion: a.completion + m.completion_tokens,
@@ -198,15 +198,6 @@ function UsageTab({ usage, users, days, setDays }: { usage: Usage | null; users:
           </tbody></table>
         </div>
       </div>
-      <div className="card">
-        <h4 className="card-title">Fleet</h4>
-        <table className="mini"><tbody>
-          {health?.models.map((m) => (
-            <tr key={m.id}><td><span className={`dot${m.online ? '' : ' off'}`} /> {m.label}</td>
-              <td>{m.online ? `${m.replicas}/${m.total} replicas online` : 'offline'}</td><td>{Math.round(m.context / 1000)}k context</td></tr>
-          ))}
-        </tbody></table>
-      </div>
     </>
   )
 }
@@ -253,7 +244,7 @@ function KeysTab() {
 
 export function AdminView() {
   const { user, navigate } = useApp()
-  const [tab, setTab] = useState<'users' | 'usage' | 'keys' | 'connectors' | 'activity'>('users')
+  const [tab, setTab] = useState<'users' | 'health' | 'usage' | 'keys' | 'connectors' | 'activity'>('users')
   const [users, setUsers] = useState<AdminUser[]>([])
   const [usage, setUsage] = useState<Usage | null>(null)
   const [days, setDays] = useState(30)
@@ -274,12 +265,14 @@ export function AdminView() {
         <div className="page-head"><h1>Admin</h1></div>
         <div className="tabs">
           <button className={tab === 'users' ? 'on' : ''} onClick={() => setTab('users')}>Users</button>
-          <button className={tab === 'usage' ? 'on' : ''} onClick={() => setTab('usage')}>Usage & fleet</button>
+          <button className={tab === 'health' ? 'on' : ''} onClick={() => setTab('health')}>Health</button>
+          <button className={tab === 'usage' ? 'on' : ''} onClick={() => setTab('usage')}>Usage</button>
           <button className={tab === 'keys' ? 'on' : ''} onClick={() => setTab('keys')}>API keys</button>
           <button className={tab === 'connectors' ? 'on' : ''} onClick={() => setTab('connectors')}>Connectors</button>
           <button className={tab === 'activity' ? 'on' : ''} onClick={() => setTab('activity')}>Activity</button>
         </div>
         {tab === 'users' && <UsersTab users={users} usage={usage} reload={reload} />}
+        {tab === 'health' && <HealthTab />}
         {tab === 'usage' && <UsageTab usage={usage} users={users} days={days} setDays={setDays} />}
         {tab === 'keys' && <KeysTab />}
         {tab === 'connectors' && <ConnectorsTab />}

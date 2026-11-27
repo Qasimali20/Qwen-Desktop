@@ -283,6 +283,24 @@ export interface AdminConnector extends Connector {
 }
 
 /** One entry of the admin activity log. */
+export type HealthStatus = 'ok' | 'warn' | 'error'
+
+export interface HealthCheck {
+  id: string
+  group: string
+  label: string
+  status: HealthStatus
+  detail: string
+  ms?: number
+}
+
+export interface HealthReport {
+  status: HealthStatus
+  checked_at: number
+  ms: number
+  checks: HealthCheck[]
+}
+
 export interface ActivityEntry {
   id: number
   at: number

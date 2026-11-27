@@ -1,5 +1,5 @@
 import type {
-  ActivityEntry, AdminConnector, AdminUser, ApiKey, AppConfig, Connector, Attachment, Conversation, ConversationSummary, Project, ProjectDetail, PromptShortcut,
+  ActivityEntry, AdminConnector, HealthReport, AdminUser, ApiKey, AppConfig, Connector, Attachment, Conversation, ConversationSummary, Project, ProjectDetail, PromptShortcut,
   PushInfo, Repo, RepoFile, ShareLink, SharedChat, Skill, StreamEvent, Workspace, WorkspaceChanges, TeamAccess, Usage, User, UserSettings,
 } from './types'
 
@@ -50,6 +50,7 @@ export const api = {
       req<User>(`/admin/users/${id}`, json('PATCH', body)),
     deleteUser: (id: string) => req<void>(`/admin/users/${id}`, { method: 'DELETE' }),
     usage: (days: number) => req<Usage>(`/admin/usage?days=${days}`),
+    health: () => req<HealthReport>('/admin/health'),
     keys: () => req<ApiKey[]>('/admin/keys'),
     revokeKey: (id: string) => req<void>(`/admin/keys/${id}`, { method: 'DELETE' }),
     activity: (p: { before?: number; category?: string; q?: string }) => {

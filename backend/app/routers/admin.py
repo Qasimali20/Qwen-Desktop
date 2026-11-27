@@ -7,7 +7,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .. import audit, auth
+from .. import audit, auth, health
 from ..auth import Admin
 from ..state import S
 
@@ -101,6 +101,11 @@ def activity(_: Admin, s: S, limit: int = 100, before: int | None = None, catego
     limit = max(1, min(limit, 500))
     items = s.db.list_audit(limit=limit + 1, before=before, category=category or None, q=(q or "").strip()[:100] or None)
     return {"items": items[:limit], "next": items[limit - 1]["id"] if len(items) > limit else None}
+
+
+@router.get("/health")
+async def health_report(_: Admin, s: S):
+    return await health.report(s)
 
 
 @router.get("/usage")

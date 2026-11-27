@@ -140,6 +140,15 @@ as `mcp__<server>__<tool>` (up to 48 per chat), each call using a short-lived MC
 to treat results as data and to confirm before actions that change external systems. Local (stdio) servers
 and OAuth sign-in are not supported yet.
 
+## Health
+
+*Admin → Health* checks every part of the deployment at once and refreshes every 30 s: each chat model
+replica (and that it serves the configured model), embeddings, OCR, speech and voice servers, the code
+sandbox image, a database integrity check, free disk space, the age of the last nightly backup, the HTTPS
+certificate's expiry, the running version (git commit), MCP connector status, web search, and failed
+sign-ins in the last 24 h. Problems are listed first, in amber (degraded) or red (down)
+(`backend/app/health.py`, `GET /api/admin/health`).
+
 ## Activity log and server logs
 
 *Admin → Activity* lists sign-ins (including failed attempts and the reason), user changes (created, role,
@@ -247,6 +256,7 @@ backend/app/
   secretscan.py  credential detection and masking
   skills.py      skills: built-ins (skills/*.md), team/personal, use_skill
   audit.py       activity log (sign-ins, admin actions, team-wide changes)
+  health.py      admin health report (fleet, sandbox, database, disk, backups, certificate)
   connectors.py  MCP connectors: tool discovery and calls (official mcp SDK)
   repos.py       repository fetch (git/zip), code-aware chunking, indexing jobs
   llm.py         pooled OpenAI-compatible client, replica failover, SSE parsing
