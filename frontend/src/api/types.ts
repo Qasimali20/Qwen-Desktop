@@ -126,8 +126,18 @@ export interface Project {
   file_count?: number
 }
 
+/** Rolling summary of the turns that no longer fit the model's context (backend/app/summary.py). */
+export interface ContextSummary {
+  text: string
+  upto_id: string     // last message the summary covers
+  upto_seq: number
+  count: number       // messages folded into it so far
+  at: number
+}
+
 export interface Conversation extends ConversationSummary {
   system_prompt: string
+  context_summary?: ContextSummary | null
   messages: Message[]
   project: Project | null
   workspace_id?: string | null
@@ -213,6 +223,7 @@ export type StreamEvent =
   | { type: 'tool_result'; index: number; result: string; ok: boolean; sources?: Source[]; outputs?: OutputFile[] }
   | { type: 'status'; text: string }
   | { type: 'title'; title: string }
+  | ({ type: 'summary' } & ContextSummary)
   | { type: 'done'; message: Message }
   | { type: 'error'; message: string; saved?: Message | null }
 

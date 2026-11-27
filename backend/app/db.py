@@ -308,6 +308,8 @@ MIGRATIONS = [
     ("projects", "kb_rev", "INTEGER NOT NULL DEFAULT 0"),
     # The project workspace a chat works in (files it reads, writes and runs commands on).
     ("conversations", "workspace_id", "TEXT REFERENCES workspaces(id) ON DELETE SET NULL"),
+    # Rolling summary of the turns that no longer fit the context (summary.py): JSON {text, upto_id, upto_seq, …}.
+    ("conversations", "context_summary", "TEXT"),
 ]
 TEAM_ACCESS = ("none", "view", "edit")
 POST_MIGRATION_INDEXES = """
@@ -316,7 +318,7 @@ CREATE INDEX IF NOT EXISTS ix_proj_user ON projects(user_id);
 CREATE INDEX IF NOT EXISTS ix_att_user ON attachments(user_id);
 """
 
-_JSON_COLS = {"blocks", "attachment_ids", "usage", "meta", "messages", "headers", "tool_list", "disabled_tools", "details"}
+_JSON_COLS = {"context_summary", "blocks", "attachment_ids", "usage", "meta", "messages", "headers", "tool_list", "disabled_tools", "details"}
 ATT_PUBLIC_COLS = "id, user_id, project_id, filename, mime, kind, size, path, meta, created_at"
 
 
@@ -607,8 +609,24 @@ class Database:
         ids = {a for m in self._all("SELECT attachment_ids FROM messages WHERE conversation_id = ? AND seq >= ?",
                                     (cid, seq)) for a in m["attachment_ids"]}
         ids |= self._output_ids_from(cid, seq)
-        self._exec("DELETE FROM messages WHERE conversation_id = ? AND seq >= ?", (cid, seq))
+        with self._lock:
+            self._c.execute("BEGIN")
+            try:
+                self._c.execute("DELETE FROM messages WHERE conversation_id = ? AND seq >= ?", (cid, seq))
+                self._drop_stale_summary(cid, seq)
+                self._c.execute("COMMIT")
+            except BaseException:
+                self._c.execute("ROLLBACK")
+                raise
         return self._gc_attachments(ids)
+
+    def _drop_stale_summary(self, cid: str, seq: int) -> None:
+        """A summary covering messages from `seq` on describes turns that were just removed (edit / regenerate)."""
+        self._c.execute("UPDATE conversations SET context_summary = NULL WHERE id = ? AND "
+                        "json_extract(context_summary, '$.upto_seq') >= ?", (cid, seq))
+
+    def set_context_summary(self, cid: str, summary: dict | None) -> None:
+        self._update("conversations", cid, {"context_summary": summary})
 
     def replace_from(self, cid: str, seq: int, content: str, attachment_ids: list[str],
                      meta: dict | None = None) -> tuple[dict, list[str]]:
@@ -623,6 +641,7 @@ class Database:
             self._c.execute("BEGIN")
             try:
                 self._c.execute("DELETE FROM messages WHERE conversation_id = ? AND seq >= ?", (cid, seq))
+                self._drop_stale_summary(cid, seq)
                 self._c.execute(
                     "INSERT INTO messages(id, conversation_id, seq, role, content, attachment_ids, meta, created_at) "
                     "VALUES (?, ?, ?, 'user', ?, ?, ?, ?)",

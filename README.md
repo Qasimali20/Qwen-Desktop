@@ -104,9 +104,10 @@ fails over **before the first token is streamed**, so users never see a half-ans
    instructions, project knowledge (inlined while it fits in 35% of the context, otherwise hybrid
    retrieval of the top 8 chunks), repository layout, workspace hints, the skills catalogue, connector
    descriptions and tool guidance.
-4. **Fit the context budget:** `context − max_tokens − system − tool schemas`. History is walked
-   newest → oldest and whole turns are kept while they fit; the latest turn is always kept and the
-   window always starts on a user turn.
+4. **Fit the context budget:** `context − max_tokens − system − tool schemas`. The turns after the
+   conversation's rolling summary are sent verbatim while they fit. When they don't, the older turns are
+   folded into the summary first (see [Long conversations](#long-conversations--summarypy)). Whole turns
+   only; the latest turn is always kept and the verbatim window always starts on a user turn.
 5. **Build the tool set** for this turn: built-ins (web, fetch, vision, knowledge, code, sandbox,
    workspace), `use_skill`, and `mcp__<server>__<tool>` for each connector the user switched on.
 6. **Agent loop.** Stream the completion; on `tool_calls`, run the tools concurrently (each with its
@@ -119,7 +120,7 @@ fails over **before the first token is streamed**, so users never see a half-ans
 Stopping a reply keeps the partial answer. Editing a message or retrying truncates the history at that
 point and re-runs the turn.
 
-**SSE events:** `user_message`, `assistant_start`, `status` (progress text), `block_start`
+**SSE events:** `user_message`, `assistant_start`, `status` (progress text), `summary` (the rolling summary was updated), `block_start`
 (text / reasoning / tool block), `delta` (token text), `tool_result`, `title`, `error`, `done`.
 The frontend batches deltas per animation frame (`store/chat.ts`), so long streams don't re-render
 per token.
@@ -212,6 +213,33 @@ web_search: { provider: brave, api_key_env: BRAVE_API_KEY }   # and export BRAVE
   share NAT addresses).
 - Changing your password signs out your other sessions; an admin reset signs out all of them. Disabling a user also
   blocks their API keys.
+
+### Long conversations — `summary.py`
+
+When a chat outgrows the model's context, older turns are condensed instead of silently dropped:
+
+1. A summary is stored on the conversation (`conversations.context_summary`: text, the ID and seq of
+   the last message it covers, and how many messages it folds in). The model receives it in the system
+   prompt as `<conversation_summary>`, followed by the later turns verbatim.
+2. Only turns after the summary are rendered. While they fit, nothing is summarised.
+3. When they no longer fit, everything older than a window of 60% of the budget is folded into the
+   summary, together with the previous summary, by the chat's own model (thinking off, temperature 0.2).
+   This hysteresis means the next turns fit without summarising again. Simulated at 200k context with
+   heavy turns of about 3.6k tokens each, the first summary comes at turn 46 and then about every 20 turns.
+4. The summariser receives each message as a plain transcript: user text with excerpts of attached
+   documents, and assistant text with tool calls and clipped results. Reasoning is left out. A large
+   backlog is processed in pieces sized to the model's context, up to 12 per turn.
+5. The prompt asks for fixed sections (goal and context, decisions, key facts, work done, open items,
+   user preferences), exact values, no invented facts and no computed figures. The summary is capped at
+   2,000 tokens, or a quarter of the budget on small-context models, and that space is reserved in the budget.
+6. **Staleness:** editing or regenerating a message deletes it and every later message. A summary whose
+   last covered message is gone is ignored, and `truncate_from`/`replace_from` also clear it in the
+   same transaction.
+7. **Failure:** if the summariser fails, the turn falls back to dropping the oldest turns and says so in
+   a status line. The next turn tries again.
+
+The chat shows a divider after the last summarised message ("N earlier messages summarised"), which
+expands to the summary text.
 
 ### Tools — `tools.py`
 
@@ -540,14 +568,15 @@ Create temporary accounts for tests and delete them afterwards.
 
 ## Known limitations and roadmap
 
-- **Long chats:** when history exceeds the context budget the oldest turns are dropped silently.
-  *Planned:* rolling summarization of older turns.
+- **Long chats** are summarised (see above). A summary is lossy: details the summariser judged
+  unimportant are gone for the model, though still visible to the user. A turn that triggers a summary
+  waits for it, typically a few seconds and longer for a large backlog.
 - **Web search** is Wikipedia-only until a Brave or Tavily key is configured.
 - **MCP:** remote HTTP/SSE servers only. Local (stdio) servers and OAuth sign-in are not supported.
 - **Repositories** sync on demand, not automatically.
 - **Qwen3 Coder on spark-4** is started by a script, not a systemd unit, so it does not come back after a reboot.
 - **Backups** are stored on the same disk as the app.
-- **Tests and CI:** the backend has tests for the secret scanner only. There is no frontend test suite and no CI yet.
+- **Tests and CI:** the backend has tests for the secret scanner and conversation summaries only. There is no frontend test suite and no CI yet.
 - **PDF generation:** some fonts render ₹ as a box in bold text, and very long table cells can
   overflow the page. The quality depends on the code the model writes.
 

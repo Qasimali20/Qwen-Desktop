@@ -31,6 +31,7 @@ from .llm import LLMClient, LLMError
 from .knowledge import KnowledgeBase
 from .prompts import expand
 from .sandbox import Sandbox
+from . import summary
 from .skills import USE_SKILL, USER_SKILL_NOTE, SkillService
 from .repos import ProjectCode
 from .tools import (ANALYZE_IMAGE, FETCH_URL, GREP_CODE, LIST_FILES, READ_FILE, RUN_PYTHON, RUN_SHELL, SEARCH_KNOWLEDGE,
@@ -408,26 +409,54 @@ class ChatService:
         budget = (model.context - model.max_tokens - estimate_tokens(system)
                   - (TOOL_OVERHEAD_TOKENS + extra_tool_tokens if tools_on else 0))
 
-        # Walk newest → oldest, keep whole turns while they fit. The latest turn is always kept.
-        chunks: list[list[dict]] = []
-        used = 0
-        for i, m in enumerate(reversed(history)):
-            if m["role"] == "user":
-                content, cost = await self._user_content(m, atts, model, inline)
-                part = [{"role": "user", "content": content}]
-            else:
-                part = self._assistant_messages(m, tools_on)
-                cost = sum(estimate_tokens(json.dumps(p, ensure_ascii=False)) for p in part)
-            if i > 0 and used + cost > budget:
-                break
-            chunks.append(part)
-            used += cost
-        msgs = [p for chunk in reversed(chunks) for p in chunk]
-        while msgs and msgs[0]["role"] != "user":  # a trimmed history must start with a user turn
-            msgs.pop(0)
+        msgs, summary_note = await self._fit_history(conv, history, model, tools_on, atts, inline, budget, emit)
+        if summary_note:
+            system += "\n\n" + summary_note
 
         tool_images = {a["id"]: (a["filename"], data_url(Path(a["path"]), a["mime"])) for a in images}
         return [{"role": "system", "content": system}, *msgs], tool_images, pc
+
+    async def _fit_history(self, conv: dict, history: list[dict], model: ChatModel, tools_on: bool,
+                           atts: dict[str, dict], inline: set[str], budget: int, emit) -> tuple[list[dict], str]:
+        """The turns to send verbatim, plus the summary note covering everything older (see summary.py).
+
+        Only messages after the stored summary are rendered; when they no longer fit, the older ones are folded
+        into a new summary and the verbatim window is cut to KEEP_SHARE of the budget."""
+        current, start = summary.valid_summary(conv, history)
+        tail = history[start:]
+        rendered: list[tuple[list[dict], int]] = []
+        for m in tail:
+            if m["role"] == "user":
+                content, cost = await self._user_content(m, atts, model, inline)
+                rendered.append(([{"role": "user", "content": content}], cost))
+            else:
+                part = self._assistant_messages(m, tools_on)
+                rendered.append((part, sum(estimate_tokens(json.dumps(p, ensure_ascii=False)) for p in part)))
+        roles = [m["role"] for m in tail]
+        costs = [c for _, c in rendered]
+        note_cost = estimate_tokens(summary.note(current)) if current else 0
+        cut = summary.window_start(roles, costs, budget - note_cost)
+
+        reserve = summary.summary_tokens(budget)
+        if cut > 0 and budget - reserve >= summary.MIN_WINDOW_TOKENS:
+            new_cut = summary.window_start(roles, costs, int((budget - reserve) * summary.KEEP_SHARE))
+            old = tail[:new_cut]
+            await emit(sse("status", text=f"Summarising {len(old)} earlier message{'s' * (len(old) != 1)} to keep the "
+                                          "whole conversation in context…"))
+            lines = [summary.transcript_line(m, atts, user_text) for m in old]
+            text = await summary.summarize(self.llm, model, current["text"] if current else None, lines, reserve)
+            if text:
+                current = summary.record(text, old[-1], (current or {}).get("count", 0) + len(old), model.id)
+                self.db.set_context_summary(conv["id"], current)
+                conv["context_summary"] = current
+                cut = new_cut
+                await emit(sse("summary", **summary.public(current)))
+            else:
+                log.warning("conversation %s: summary failed, dropping the oldest turns instead", conv["id"])
+                await emit(sse("status", text="Couldn't summarise earlier messages; using the most recent ones"))
+
+        msgs = [p for part, _ in rendered[cut:] for p in part]
+        return msgs, (summary.note(current) if current else "")
 
     def _sandbox_inputs(self, conv: dict, history: list[dict]) -> list[dict]:
         """Files exposed to run_python: everything attached in this chat plus the project's files."""

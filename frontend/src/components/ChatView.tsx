@@ -2,7 +2,7 @@ import { LogoMark } from './LogoMark'
 import { SparkMark } from './SparkMark'
 import { WorkingLine } from './WorkingLine'
 import { greeting } from '../lib/phrases'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowDown, FolderOpen, Share2 } from 'lucide-react'
 import { api } from '../api/client'
 import type { Message } from '../api/types'
@@ -12,6 +12,7 @@ import { useSpeech } from '../store/speech'
 import { Composer, type SendPayload } from './Composer'
 import { AssistantMessage, UserMessage } from './Message'
 import { ShareDialog } from './Share'
+import { SummaryDivider } from './SummaryDivider'
 import { WorkspaceChip } from './ChangesPanel'
 import { WorkspacePicker } from './WorkspaceSection'
 
@@ -123,18 +124,24 @@ export function ChatView({ conversationId, projectId }: { conversationId?: strin
   }
 
   const lastAssistant = messages.map((m) => m.role).lastIndexOf('assistant')
+  // Shown only while the message it ends at exists: an edit or retry above it makes the summary stale.
+  const summary = conversation?.context_summary
+  const summaryAfter = summary && messages.some((m) => m.id === summary.upto_id) ? summary.upto_id : null
   return (
     <div className="chat">
       <ChatHeader />
       <div className="messages" ref={scroller} onScroll={onScroll}>
         <div className="messages-inner">
-          {loading ? <div className="loading-msgs"><span className="pulse" /> Loading…</div> : messages.map((m, i) =>
-            m.role === 'user'
-              ? <UserMessage key={m.id} m={m} onEdit={onEdit} disabled={isStreaming} />
-              : <AssistantMessage key={m.id} m={m} live={isStreaming && m.id === streaming?.assistantId}
-                status={isStreaming ? streaming!.status : null} isLast={i === lastAssistant && !isStreaming}
-                onRegenerate={onRegenerate} />,
-          )}
+          {loading ? <div className="loading-msgs"><span className="pulse" /> Loading…</div> : messages.map((m, i) => (
+            <Fragment key={m.id}>
+              {m.role === 'user'
+                ? <UserMessage m={m} onEdit={onEdit} disabled={isStreaming} />
+                : <AssistantMessage m={m} live={isStreaming && m.id === streaming?.assistantId}
+                  status={isStreaming ? streaming!.status : null} isLast={i === lastAssistant && !isStreaming}
+                  onRegenerate={onRegenerate} />}
+              {m.id === summaryAfter && summary && <SummaryDivider summary={summary} />}
+            </Fragment>
+          ))}
           {isStreaming && !streaming?.assistantId && (
             <div className="msg msg-assistant"><div className="avatar" aria-hidden><LogoMark /></div><div className="msg-body"><WorkingLine /></div></div>
           )}

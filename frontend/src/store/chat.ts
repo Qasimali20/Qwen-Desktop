@@ -125,6 +125,14 @@ export const useChat = create<ChatState>((set, get) => {
         }
         break
       }
+      case 'summary': {
+        const conv = get().conversation
+        if (conv) {
+          const { type: _type, ...summary } = ev
+          set({ conversation: { ...conv, context_summary: summary } })
+        }
+        break
+      }
       case 'done':
         set((s) => ({ messages: s.messages.map((m) => (m.id === ev.message.id ? ev.message : m)) }))
         break
